@@ -1,6 +1,6 @@
 import requests
 import re
-from src.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from src.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_ENABLED
 from src.logger import error_logger, alerts_logger
 
 def escape_telegram_html(text: str) -> str:
@@ -11,7 +11,6 @@ def escape_telegram_html(text: str) -> str:
     allowed_tags = ['b', '/b', 'i', '/i', 'u', '/u', 's', '/s', 'code', '/code', 'pre', '/pre']
     
     # Reemplazamos los ampersands sueltos primero
-    # Un ampersand es seguro de reemplazar si no es parte de un entity ya escapado como &lt;
     text = re.sub(r'&(?!(amp|lt|gt|quot|apos);)', '&amp;', text)
     
     def tag_replacer(match):
@@ -22,10 +21,7 @@ def escape_telegram_html(text: str) -> str:
         else:
             return f"&lt;{content}&gt;"
             
-    # Primero convertimos explícitamente <= y >= a texto escapado
     safe_text = text.replace('<=', '&lt;=').replace('>=', '&gt;=')
-    
-    # Luego procesamos etiquetas
     safe_text = re.sub(r'<(.*?)>', tag_replacer, safe_text)
     
     return safe_text
@@ -34,6 +30,10 @@ def send_safe_telegram_message(message: str, use_html: bool = True) -> bool:
     """
     Intenta enviar con parse_mode="HTML". Si falla por formato, reenvía como texto plano.
     """
+    if not TELEGRAM_ENABLED:
+        alerts_logger.info(f"[TELEGRAM DESACTIVADO] Mensaje interceptado:\n{message}")
+        print(f"\n[MODO DEGRADADO] Mensaje que iría a Telegram:\n{message}\n")
+        return True
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     
     # Preparar el payload
@@ -98,5 +98,9 @@ def send_telegram_message(message: str) -> bool:
 
 def test_telegram_connection():
     """Prueba la conexión a Telegram antes de iniciar el bot."""
+    if not TELEGRAM_ENABLED:
+        print("⚠️ Telegram desactivado. Ignorando prueba de conexión.")
+        return
+        
     print("Iniciando prueba de conexión con Telegram...")
     send_safe_telegram_message("✅ <b>Prueba</b> de conexión Telegram")

@@ -6,7 +6,13 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from pydantic import BaseModel
+from typing import List, Optional, Any
+from fastapi.responses import HTMLResponse, PlainTextResponse
+import time
 from dotenv import load_dotenv
+
+START_TIME = time.time()
 
 load_dotenv()
 
@@ -36,11 +42,108 @@ TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templa
 # Configurar Jinja2 para las plantillas HTML
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
+# --- MODELOS PYDANTIC (Fase 1: Tipado Fuerte) ---
+class StatusResponse(BaseModel):
+    status: str
+    message: Optional[str] = None
+    usdt_balance: Optional[float] = None
+    imx_balance: Optional[float] = None
+    total_profit: Optional[float] = None
+    has_open_position: Optional[bool] = None
+    total_trades: Optional[int] = None
+    last_update: Optional[str] = None
+    initial_capital: Optional[float] = None
+    roi_percentage: Optional[float] = None
+    win_rate: Optional[float] = None
+
+class Trade(BaseModel):
+    id: int
+    timestamp: str
+    type: str
+    price: float
+    amount_imx: float
+    total_usdt: float
+
+class TradesResponse(BaseModel):
+    status: str = "success"
+    message: Optional[str] = None
+    trades: List[dict] = []  # Usamos dict temporalmente para mayor flexibilidad con SQLite
+
+class HealthResponse(BaseModel):
+    status: str
+    version: str
+    description: str
+    checks: dict
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request, username: str = Depends(verify_credentials)):
     return templates.TemplateResponse(request=request, name="index.html")
 
-@app.get("/api/status")
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
+    """Endpoint SRE (Fase 3: Observabilidad)."""
+    db_ok = False
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("SELECT 1")
+            db_ok = True
+    except Exception:
+        pass
+
+    # Validación de entorno (Telegram Token existe)
+    telegram_ok = bool(os.getenv("TELEGRAM_TOKEN"))
+
+    is_healthy = db_ok and telegram_ok
+    status_code = status.HTTP_200_OK if is_healthy else status.HTTP_503_SERVICE_UNAVAILABLE
+
+    response = HealthResponse(
+        status="pass" if is_healthy else "fail",
+        version="2.0.0",
+        description="IMX Cloud Monitor Health Status",
+        checks={
+            "database:sqlite": "up" if db_ok else "down",
+            "api:telegram_token": "configured" if telegram_ok else "missing"
+        }
+    )
+    if not is_healthy:
+        raise HTTPException(status_code=status_code, detail=response.dict())
+    return response
+
+@app.get("/metrics", response_class=PlainTextResponse)
+async def get_metrics():
+    """Endpoint SRE (Fase 3: Observabilidad) - Formato Prometheus."""
+    uptime_seconds = time.time() - START_TIME
+    
+    total_trades = 0
+    total_profit = 0.0
+    
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT COUNT(*) FROM trades") as cursor:
+                row = await cursor.fetchone()
+                if row: total_trades = row[0]
+                
+            async with db.execute("SELECT total_profit FROM bot_state ORDER BY timestamp DESC LIMIT 1") as cursor:
+                row = await cursor.fetchone()
+                if row: total_profit = row[0]
+    except Exception:
+        pass
+
+    metrics = [
+        "# HELP imx_bot_uptime_seconds Tiempo de actividad del dashboard",
+        "# TYPE imx_bot_uptime_seconds gauge",
+        f"imx_bot_uptime_seconds {uptime_seconds:.2f}",
+        "# HELP imx_bot_trades_total Total de operaciones ejecutadas",
+        "# TYPE imx_bot_trades_total counter",
+        f"imx_bot_trades_total {total_trades}",
+        "# HELP imx_bot_pnl_usdt Profit and Loss acumulado en USDT",
+        "# TYPE imx_bot_pnl_usdt gauge",
+        f"imx_bot_pnl_usdt {total_profit}"
+    ]
+    
+    return "\n".join(metrics) + "\n"
+
+@app.get("/api/status", response_model=StatusResponse)
 async def get_status(username: str = Depends(verify_credentials)):
     """Devuelve el estado general del bot (Capital, IMX, PnL, Posición)."""
     try:
@@ -57,20 +160,30 @@ async def get_status(username: str = Depends(verify_credentials)):
                 total_trades = row["total_trades"]
                 
         if state:
+            initial_capital = float(os.getenv("INITIAL_CAPITAL", "100.0"))
+            profit = state.get("total_profit", 0.0)
+            roi = (profit / initial_capital) * 100 if initial_capital > 0 else 0.0
+            
+            # Estimación simple de Win Rate (por ahora 100% si hay profit, o basado en lógica futura)
+            win_rate = 100.0 if profit > 0 else 0.0 
+            
             return {
                 "status": "online",
                 "usdt_balance": state["usdt_balance"],
                 "imx_balance": state["imx_balance"],
-                "total_profit": state.get("total_profit", 0.0),
+                "total_profit": profit,
                 "has_open_position": state["imx_balance"] > 0,
                 "total_trades": total_trades,
-                "last_update": state["timestamp"]
+                "last_update": state["timestamp"],
+                "initial_capital": initial_capital,
+                "roi_percentage": round(roi, 2),
+                "win_rate": round(win_rate, 2)
             }
         return {"status": "offline", "message": "No hay datos en bot_state"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-@app.get("/api/trades")
+@app.get("/api/trades", response_model=TradesResponse)
 async def get_trades(username: str = Depends(verify_credentials)):
     """Devuelve el historial de operaciones para la tabla y el gráfico."""
     try:

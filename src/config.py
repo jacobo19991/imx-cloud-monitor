@@ -8,8 +8,8 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-    raise ValueError("Faltan credenciales de Telegram en el archivo .env")
+# Modo degradado: Si no hay token, se apaga Telegram pero el bot no se muere
+TELEGRAM_ENABLED = bool(TELEGRAM_TOKEN and TELEGRAM_CHAT_ID)
 
 # Configuraciones de trading
 BUY_PRICE = float(os.getenv("BUY_PRICE", "0.1720"))
