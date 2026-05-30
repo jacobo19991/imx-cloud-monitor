@@ -12,3 +12,6 @@ logs/
 
 # Paper Trading state
 paper_trading_state.json
+
+# Base de datos
+data/
