@@ -5,3 +5,5 @@ fastapi
 uvicorn
 jinja2
 aiosqlite
+pytest==8.1.1
+pytest-asyncio==0.23.6

@@ -1,28 +1,38 @@
-# Utilizar una imagen base oficial y ligera de Python
-FROM python:3.11-slim
+# --- Stage 1: Compilación (Builder) ---
+FROM python:3.11-slim as builder
 
-# Establecer variables de entorno para evitar que Python genere archivos .pyc 
-# y para que el log se muestre en tiempo real (unbuffered)
+WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Crear un directorio de trabajo dentro del contenedor
+# Instalar dependencias necesarias para compilar (gcc, etc si fuera necesario)
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.txt
+
+# --- Stage 2: Producción (Ligera y Segura) ---
+FROM python:3.11-slim
+
+# Crear usuario non-root por seguridad (OWASP)
+RUN useradd -m -r imxuser
+
 WORKDIR /app
 
-# Copiar el archivo de dependencias primero para aprovechar el caché de Docker
-COPY requirements.txt .
+# Copiar wheels compilados desde el builder
+COPY --from=builder /app/wheels /wheels
+COPY --from=builder /app/requirements.txt .
 
-# Instalar dependencias del sistema y de Python
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache /wheels/*
 
-# Copiar todo el código fuente al contenedor
+# Copiar el código de la aplicación
 COPY . .
 
-# Crear el volumen de datos para la base de datos SQLite y logs
-VOLUME ["/app/data", "/app/logs"]
+# Ajustar permisos para el usuario
+RUN chown -R imxuser:imxuser /app
+USER imxuser
 
-# Exponer puerto para el Dashboard Web (Usado por web-dashboard)
+VOLUME ["/app/data", "/app/logs"]
 EXPOSE 8000
 
-# Comando por defecto (Sobrescribible por docker-compose)
 CMD ["python", "-m", "src.main"]

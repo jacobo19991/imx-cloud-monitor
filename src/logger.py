@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -7,12 +8,23 @@ LOGS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
 if not os.path.exists(LOGS_DIR):
     os.makedirs(LOGS_DIR)
 
+class JsonFormatter(logging.Formatter):
+    """Formato de log estructurado en JSON para observabilidad Cloud (Datadog, Loki, CloudWatch)."""
+    def format(self, record):
+        log_record = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "logger": record.name,
+            "level": record.levelname,
+            "message": record.getMessage()
+        }
+        if record.exc_info:
+            log_record["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_record)
+
 def setup_logger(name: str, log_file: str, level=logging.INFO) -> logging.Logger:
-    """Configura y devuelve un logger con rotación de archivos."""
+    """Configura y devuelve un logger con rotación de archivos y formato JSON."""
     
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    formatter = JsonFormatter()
     
     # Manejador de archivo con rotación (max 5MB por archivo, guarda 3 backups)
     file_path = os.path.join(LOGS_DIR, log_file)
