@@ -21,5 +21,8 @@ COPY . .
 # Crear el volumen de datos para la base de datos SQLite y logs
 VOLUME ["/app/data", "/app/logs"]
 
-# Comando por defecto para ejecutar la aplicación
+# Exponer puerto para el Dashboard Web (Usado por web-dashboard)
+EXPOSE 8000
+
+# Comando por defecto (Sobrescribible por docker-compose)
 CMD ["python", "-m", "src.main"]

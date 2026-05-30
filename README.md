@@ -1,68 +1,74 @@
-# IMX Cloud Monitor 🚀☁️
+# IMX Cloud Monitor ☁️🚀 (SaaS Edition)
 
 ![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
-![SQLite](https://img.shields.io/badge/Database-SQLite-informational)
-![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=FastAPI&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker_Compose-Ready-2496ED.svg?logo=docker)
+![Status](https://img.shields.io/badge/Status-Production_Ready-success.svg)
 
-Un bot de monitorización automatizada y sistema de **Paper Trading** para el par IMX/USDT. Diseñado con una arquitectura modular orientada a despliegues en la nube (Cloud/DevOps).
+**IMX Cloud Monitor** es una arquitectura de microservicios diseñada para simular, operar y monitorear activos financieros (par IMX/USDT) con grado de producción. 
 
-## ☁️ Enfoque Cloud & DevOps
+Construido bajo el paradigma **Cloud-Native**, este sistema aísla el motor de trading de la interfaz analítica web, garantizando alta disponibilidad, concurrencia asíncrona y seguridad integral.
 
-Este proyecto fue desarrollado aplicando buenas prácticas de infraestructura y desarrollo:
-* **Persistencia Segura:** Uso de SQLite para almacenamiento ligero y rápido sin depender de servicios externos complejos.
-* **Separación de Entornos:** Gestión estricta de credenciales a través de variables de entorno (`.env`).
-* **Container-Ready:** Incluye configuración de Docker para un despliegue aislado y predecible en cualquier proveedor de nube (AWS, GCP, VPS local).
-* **Notificaciones en Tiempo Real:** Integración con la API de Telegram con sanitización automática de mensajes para evitar fallos de formato.
-* **Observabilidad:** Sistema de logging estructurado para facilitar la depuración en servidores remotos.
+---
 
-## 🛠️ Arquitectura del Sistema
+## 🏛️ Arquitectura de Microservicios
 
-- `src/main.py`: Orquestador principal.
-- `src/paper_trading.py`: Motor lógico de simulación (Single Position Enforcement).
-- `src/database.py`: Gestión de migraciones y consultas SQLite.
-- `src/telegram_service.py`: Comunicación asíncrona y blindada con el usuario.
+El sistema está orquestado con **Docker Compose** y cuenta con Health Checks de autorreparación:
 
-## 🚀 Instalación y Despliegue Local
+1. **Trading Engine (`trading-engine`)**
+   - Motor lógico aislado en Python.
+   - Implementa control estricto de Posición Única (Single Position Enforcement).
+   - Comunicación en tiempo real vía Telegram API.
+2. **Web Dashboard API (`web-dashboard`)**
+   - Interfaz gráfica SPA construida con TailwindCSS y Chart.js.
+   - Backend asíncrono con **FastAPI** y `aiosqlite`.
+   - Protegido por autenticación `HTTPBasic`.
+3. **Capa de Persistencia Compartida**
+   - Base de datos SQLite y volúmenes de logs compartidos mediante montajes persistentes de Docker (`/app/data`).
 
-### Requisitos Previos
-- Python 3.11+
-- Git
+---
 
-### Paso 1: Clonar e instalar
+## 🚀 Despliegue con un Solo Comando (Cloud-Ready)
+
+Este proyecto está diseñado para desplegarse en cualquier VPS (AWS EC2, DigitalOcean, Azure) de manera determinista.
+
+### Prerrequisitos
+- Docker Engine & Docker Compose
+- Clonar el repositorio y configurar credenciales:
+  ```bash
+  cp .env.example .env
+  # Edita .env con tus credenciales seguras
+  ```
+
+### Arrancar la Infraestructura Completa
 ```bash
-git clone https://github.com/tu-usuario/imx-cloud-monitor.git
-cd imx-cloud-monitor
-pip install -r requirements.txt
+docker-compose up -d --build
+```
+> [!TIP]
+> Esto levantará ambos servicios en paralelo. El dashboard web estará disponible inmediatamente de forma segura en `http://localhost:8000`.
+
+### Monitoreo Operativo
+Verifica el estado de salud de los contenedores (Health Checks):
+```bash
+docker ps
+docker-compose logs -f trading-engine
 ```
 
-### Paso 2: Configuración
-Crea tu archivo de entorno basándote en la plantilla de seguridad:
-```bash
-cp .env.example .env
-```
-Edita `.env` con tu token de Telegram y configuración de trading.
+---
 
-### Paso 3: Ejecución
-```bash
-python -m src.main
-```
+## 🔒 Seguridad Implementada
 
-## 🐳 Despliegue con Docker (Recomendado para VPS)
+- **Aislamiento de Red:** El motor de trading no expone ningún puerto al exterior.
+- **Autenticación Web:** La interfaz financiera está blindada por variables de entorno administradas por FastAPI (Basic Auth).
+- **Asincronía Real:** La API web (`aiosqlite`) nunca bloquea el Event Loop del bot, previniendo cuelgues (Database Locks).
 
-Este proyecto está preparado para ejecutarse 24/7 en contenedores.
+---
 
-```bash
-# Construir la imagen
-docker build -t imx-cloud-monitor .
+## 🗺️ Roadmap de Monetización (Visión SaaS)
 
-# Ejecutar el contenedor en segundo plano (montando el volumen de datos para persistir SQLite)
-docker run -d --name imx_bot \
-  -v $(pwd)/data:/app/data \
-  --env-file .env \
-  imx-cloud-monitor
-```
+El proyecto está diseñado para evolucionar hacia una plataforma **SaaS (Software as a Service) Multi-Tenant**:
 
-## 📋 Próximos Pasos (Roadmap)
-- [ ] Integración con el dashboard web analítico (FastAPI).
-- [ ] Despliegue CI/CD usando GitHub Actions.
-- [ ] Conexión a exchange real mediante APIs seguras.
+- **Fase 1 (MVP Actual):** Motor de Paper Trading automatizado con métricas privadas y notificaciones instantáneas.
+- **Fase 2 (Suscripción):** Ofrecer señales de Telegram automáticas como servicio (Premium Alerts) para canales privados, cobrando membresía mensual.
+- **Fase 3 (Integración CEX):** Conectar el motor directamente a las APIs de Binance o Bybit (CCXT) para ejecutar operaciones con dinero real.
+- **Fase 4 (Multi-Tenant Dashboard):** Cada usuario registrado en el sistema tendrá su propia sub-cuenta administrada, cobrando comisiones por volumen operado bajo el modelo *Hedge Fund As-A-Service*.
