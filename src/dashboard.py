@@ -1,6 +1,7 @@
 import os
-import aiosqlite
+import os
 import secrets
+from sqlalchemy import select, func
 from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -42,6 +43,13 @@ TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templa
 # Configurar Jinja2 para las plantillas HTML
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
+from src.models import AsyncSessionLocal, BotState, Trade
+from sqlalchemy.exc import SQLAlchemyError
+
+async def get_db():
+    async with AsyncSessionLocal() as session:
+        yield session
+
 # --- MODELOS PYDANTIC (Fase 1: Tipado Fuerte) ---
 class StatusResponse(BaseModel):
     status: str
@@ -80,13 +88,12 @@ async def read_root(request: Request, username: str = Depends(verify_credentials
     return templates.TemplateResponse(request=request, name="index.html")
 
 @app.get("/health", response_model=HealthResponse)
-async def health_check():
+async def health_check(db: AsyncSession = Depends(get_db)):
     """Endpoint SRE (Fase 3: Observabilidad)."""
     db_ok = False
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("SELECT 1")
-            db_ok = True
+        await db.execute(select(1))
+        db_ok = True
     except Exception:
         pass
 
@@ -101,7 +108,7 @@ async def health_check():
         version="2.0.0",
         description="IMX Cloud Monitor Health Status",
         checks={
-            "database:sqlite": "up" if db_ok else "down",
+            "database": "up" if db_ok else "down",
             "api:telegram_token": "configured" if telegram_ok else "missing"
         }
     )
@@ -110,7 +117,7 @@ async def health_check():
     return response
 
 @app.get("/metrics", response_class=PlainTextResponse)
-async def get_metrics():
+async def get_metrics(db: AsyncSession = Depends(get_db)):
     """Endpoint SRE (Fase 3: Observabilidad) - Formato Prometheus."""
     uptime_seconds = time.time() - START_TIME
     
@@ -118,14 +125,13 @@ async def get_metrics():
     total_profit = 0.0
     
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT COUNT(*) FROM trades") as cursor:
-                row = await cursor.fetchone()
-                if row: total_trades = row[0]
-                
-            async with db.execute("SELECT total_profit FROM bot_state ORDER BY timestamp DESC LIMIT 1") as cursor:
-                row = await cursor.fetchone()
-                if row: total_profit = row[0]
+        result_trades = await db.execute(select(func.count(Trade.id)))
+        total_trades = result_trades.scalar() or 0
+        
+        result_profit = await db.execute(select(BotState.total_profit).filter(BotState.id == 1))
+        profit_scalar = result_profit.scalar()
+        if profit_scalar is not None:
+            total_profit = profit_scalar
     except Exception:
         pass
 
@@ -144,37 +150,33 @@ async def get_metrics():
     return "\n".join(metrics) + "\n"
 
 @app.get("/api/status", response_model=StatusResponse)
-async def get_status(username: str = Depends(verify_credentials)):
+async def get_status(username: str = Depends(verify_credentials), db: AsyncSession = Depends(get_db)):
     """Devuelve el estado general del bot (Capital, IMX, PnL, Posición)."""
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            
-            # Obtener el último estado del bot
-            async with db.execute("SELECT * FROM bot_state ORDER BY timestamp DESC LIMIT 1") as cursor:
-                state = await cursor.fetchone()
-            
-            # Obtener métricas de trades
-            async with db.execute("SELECT COUNT(*) as total_trades FROM trades") as cursor:
-                row = await cursor.fetchone()
-                total_trades = row["total_trades"]
+        # Obtener el último estado del bot
+        result = await db.execute(select(BotState).filter(BotState.id == 1))
+        state = result.scalars().first()
+        
+        # Obtener métricas de trades
+        result_trades = await db.execute(select(func.count(Trade.id)))
+        total_trades = result_trades.scalar() or 0
                 
         if state:
             initial_capital = float(os.getenv("INITIAL_CAPITAL", "100.0"))
-            profit = state.get("total_profit", 0.0)
+            profit = state.total_profit or 0.0
             roi = (profit / initial_capital) * 100 if initial_capital > 0 else 0.0
             
-            # Estimación simple de Win Rate (por ahora 100% si hay profit, o basado en lógica futura)
+            # Estimación simple de Win Rate
             win_rate = 100.0 if profit > 0 else 0.0 
             
             return {
                 "status": "online",
-                "usdt_balance": state["usdt_balance"],
-                "imx_balance": state["imx_balance"],
+                "usdt_balance": state.usdt_balance,
+                "imx_balance": state.imx_balance,
                 "total_profit": profit,
-                "has_open_position": state["imx_balance"] > 0,
+                "has_open_position": state.imx_balance > 0,
                 "total_trades": total_trades,
-                "last_update": state["timestamp"],
+                "last_update": str(state.updated_at) if state.updated_at else None,
                 "initial_capital": initial_capital,
                 "roi_percentage": round(roi, 2),
                 "win_rate": round(win_rate, 2)
@@ -184,17 +186,22 @@ async def get_status(username: str = Depends(verify_credentials)):
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/trades", response_model=TradesResponse)
-async def get_trades(username: str = Depends(verify_credentials)):
+async def get_trades(username: str = Depends(verify_credentials), db: AsyncSession = Depends(get_db)):
     """Devuelve el historial de operaciones para la tabla y el gráfico."""
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            
-            # Obtener los últimos 50 trades
-            async with db.execute("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 50") as cursor:
-                rows = await cursor.fetchall()
-                trades = [dict(row) for row in rows]
+        result = await db.execute(select(Trade).order_by(Trade.timestamp.desc()).limit(50))
+        trades = result.scalars().all()
+        
+        trades_dict = [{
+            "id": t.id,
+            "timestamp": str(t.timestamp),
+            "symbol": t.symbol,
+            "action": t.action,
+            "price": t.price,
+            "amount_imx": t.quantity,
+            "total_usdt": t.quantity * t.price
+        } for t in trades]
                 
-        return {"trades": trades}
+        return {"trades": trades_dict}
     except Exception as e:
         return {"status": "error", "message": str(e)}

@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'imx-cloud-monitor'
+    static_configs:
+      - targets: ['web-dashboard:8000']

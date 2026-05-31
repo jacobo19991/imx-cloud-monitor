@@ -1,149 +1,134 @@
-import sqlite3
 import os
 from src.logger import error_logger
-
-DB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
-DB_PATH = os.path.join(DB_DIR, 'trades.db')
-
-def get_connection():
-    """Retorna una conexión a la base de datos SQLite."""
-    if not os.path.exists(DB_DIR):
-        os.makedirs(DB_DIR)
-    
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+from src.models import Base, engine, SessionLocal, BotState, Trade
+from sqlalchemy.exc import SQLAlchemyError
 
 def init_db():
-    """Crea las tablas si no existen y aplica migraciones de columnas."""
-    conn = None
+    """Crea las tablas en la base de datos usando SQLAlchemy."""
     try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Tabla de operaciones (trades)
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            symbol TEXT NOT NULL,
-            action TEXT NOT NULL,
-            price REAL NOT NULL,
-            quantity REAL NOT NULL,
-            usdt_balance REAL NOT NULL,
-            imx_balance REAL NOT NULL,
-            pnl REAL,
-            notes TEXT
-        )
-        ''')
-        
-        # Tabla de estado del bot
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS bot_state (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            usdt_balance REAL NOT NULL,
-            imx_balance REAL NOT NULL,
-            last_buy_price REAL,
-            last_sell_price REAL,
-            status TEXT DEFAULT 'ACTIVE',
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-        ''')
-        
-        # Migraciones dinámicas: intentar agregar nuevas columnas si no existen
-        try:
-            cursor.execute("ALTER TABLE bot_state ADD COLUMN position_open INTEGER DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass # Ya existe
-            
-        try:
-            cursor.execute("ALTER TABLE bot_state ADD COLUMN entry_price REAL DEFAULT 0.0")
-        except sqlite3.OperationalError:
-            pass # Ya existe
-            
-        try:
-            cursor.execute("ALTER TABLE bot_state ADD COLUMN entry_timestamp DATETIME")
-        except sqlite3.OperationalError:
-            pass # Ya existe
-        
-        conn.commit()
+        # Create data directory if using sqlite
+        db_url = os.getenv("DATABASE_URL", "sqlite:///data/trades.db")
+        if db_url.startswith("sqlite"):
+            db_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
+            if not os.path.exists(db_dir):
+                os.makedirs(db_dir)
+
+        # Crear tablas (idealmente manejado por Alembic en producción, pero útil para local/testing)
+        Base.metadata.create_all(bind=engine)
     except Exception as e:
-        error_logger.error(f"Error inicializando base de datos: {e}")
-    finally:
-        if conn:
-            conn.close()
+        error_logger.error(f"Error inicializando base de datos SQLAlchemy: {e}")
 
 def save_trade(symbol: str, action: str, price: float, quantity: float, usdt_balance: float, imx_balance: float, pnl: float = 0.0, notes: str = ""):
-    """Guarda un registro de la operación en el historial."""
-    conn = None
+    """Guarda un registro de la operación en el historial usando SQLAlchemy."""
+    db = SessionLocal()
     try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO trades (symbol, action, price, quantity, usdt_balance, imx_balance, pnl, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (symbol, action, price, quantity, usdt_balance, imx_balance, pnl, notes))
-        conn.commit()
-    except Exception as e:
-        error_logger.error(f"Error guardando trade: {e}")
+        new_trade = Trade(
+            symbol=symbol,
+            action=action,
+            price=price,
+            quantity=quantity,
+            usdt_balance=usdt_balance,
+            imx_balance=imx_balance,
+            pnl=pnl,
+            notes=notes
+        )
+        db.add(new_trade)
+        db.commit()
+    except SQLAlchemyError as e:
+        error_logger.error(f"Error guardando trade (ORM): {e}")
+        db.rollback()
     finally:
-        if conn:
-            conn.close()
+        db.close()
 
 def get_trades(limit: int = 50):
     """Obtiene el historial de las últimas transacciones."""
-    conn = None
+    db = SessionLocal()
     try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?", (limit,))
-        return [dict(row) for row in cursor.fetchall()]
-    except Exception as e:
-        error_logger.error(f"Error obteniendo trades: {e}")
+        trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(limit).all()
+        # Convertir a dict para retrocompatibilidad
+        return [{
+            "id": t.id,
+            "timestamp": str(t.timestamp),
+            "symbol": t.symbol,
+            "action": t.action,
+            "price": t.price,
+            "quantity": t.quantity,
+            "usdt_balance": t.usdt_balance,
+            "imx_balance": t.imx_balance,
+            "pnl": t.pnl,
+            "notes": t.notes
+        } for t in trades]
+    except SQLAlchemyError as e:
+        error_logger.error(f"Error obteniendo trades (ORM): {e}")
         return []
     finally:
-        if conn:
-            conn.close()
+        db.close()
 
 def get_bot_state() -> dict:
     """Recupera el estado actual del bot."""
-    conn = None
+    db = SessionLocal()
     try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM bot_state WHERE id = 1")
-        row = cursor.fetchone()
-        return dict(row) if row else None
-    except Exception as e:
-        error_logger.error(f"Error obteniendo estado del bot: {e}")
+        state = db.query(BotState).filter(BotState.id == 1).first()
+        if state:
+            return {
+                "id": state.id,
+                "usdt_balance": state.usdt_balance,
+                "imx_balance": state.imx_balance,
+                "last_buy_price": state.last_buy_price,
+                "last_sell_price": state.last_sell_price,
+                "status": state.status,
+                "position_open": state.position_open,
+                "entry_price": state.entry_price,
+                "entry_timestamp": str(state.entry_timestamp) if state.entry_timestamp else None,
+                "total_profit": state.total_profit,
+                "updated_at": str(state.updated_at) if state.updated_at else None
+            }
+        return None
+    except SQLAlchemyError as e:
+        error_logger.error(f"Error obteniendo estado del bot (ORM): {e}")
         return None
     finally:
-        if conn:
-            conn.close()
+        db.close()
 
 def update_bot_state(usdt_balance: float, imx_balance: float, last_buy_price: float = 0.0, last_sell_price: float = 0.0, status: str = 'ACTIVE', position_open: int = 0, entry_price: float = 0.0, entry_timestamp: str = None):
     """Actualiza o inserta el estado del bot."""
-    conn = None
+    db = SessionLocal()
     try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT id FROM bot_state WHERE id = 1")
-        if cursor.fetchone():
-            cursor.execute('''
-                UPDATE bot_state
-                SET usdt_balance = ?, imx_balance = ?, last_buy_price = ?, last_sell_price = ?, status = ?, position_open = ?, entry_price = ?, entry_timestamp = COALESCE(?, entry_timestamp), updated_at = CURRENT_TIMESTAMP
-                WHERE id = 1
-            ''', (usdt_balance, imx_balance, last_buy_price, last_sell_price, status, position_open, entry_price, entry_timestamp))
-        else:
-            cursor.execute('''
-                INSERT INTO bot_state (id, usdt_balance, imx_balance, last_buy_price, last_sell_price, status, position_open, entry_price, entry_timestamp)
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (usdt_balance, imx_balance, last_buy_price, last_sell_price, status, position_open, entry_price, entry_timestamp))
+        state = db.query(BotState).filter(BotState.id == 1).first()
+        if state:
+            state.usdt_balance = usdt_balance
+            state.imx_balance = imx_balance
+            state.last_buy_price = last_buy_price
+            state.last_sell_price = last_sell_price
+            state.status = status
+            state.position_open = position_open
+            state.entry_price = entry_price
+            if entry_timestamp:
+                state.entry_timestamp = entry_timestamp
             
-        conn.commit()
-    except Exception as e:
-        error_logger.error(f"Error actualizando estado del bot: {e}")
+            # Calcular profit estimado simple si hay posición cerrada
+            if position_open == 0 and imx_balance == 0:
+                # Este es un cálculo básico. Idealmente se pasa el PnL exacto
+                from src.config import INITIAL_CAPITAL
+                state.total_profit = usdt_balance - INITIAL_CAPITAL
+        else:
+            new_state = BotState(
+                id=1,
+                usdt_balance=usdt_balance,
+                imx_balance=imx_balance,
+                last_buy_price=last_buy_price,
+                last_sell_price=last_sell_price,
+                status=status,
+                position_open=position_open,
+                entry_price=entry_price,
+                entry_timestamp=entry_timestamp,
+                total_profit=0.0
+            )
+            db.add(new_state)
+        
+        db.commit()
+    except SQLAlchemyError as e:
+        error_logger.error(f"Error actualizando estado del bot (ORM): {e}")
+        db.rollback()
     finally:
-        if conn:
-            conn.close()
+        db.close()
